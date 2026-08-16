@@ -1,0 +1,14 @@
+[
+       {
+              "isActive": "yes",
+              "isFolder": "no",
+              "name": "MCVPMerge",
+              "script": ""
+       },
+       {
+              "isActive": "yes",
+              "isFolder": "no",
+              "name": "MCVPLoader",
+              "script": ""
+       }
+]

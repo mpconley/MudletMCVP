@@ -1,0 +1,44 @@
+name: Build project using muddler and upload artifact
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v3.3.0
+
+      - name: JSON to variables
+        # see https://github.com/antifree/json-to-variables
+        uses: antifree/json-to-variables@v1.2.0
+        with:
+          filename: "./mfile"
+          prefix: "mfile"
+
+      - name: "create version.txt"
+        # see https://github.com/marketplace/actions/create-a-file
+        uses: 1arp/create-a-file-action@0.4.5
+        with:
+          path: './'
+          isAbsolutePath: false
+          file: 'version.txt'
+          content: ${{ env.mfile_version }}
+
+      - name: Build With Muddler
+        # see https://github.com/demonnic/build-with-muddler
+        uses: demonnic/build-with-muddler@v1.4
+        with:
+          muddlerVersion: LATEST
+
+      - uses: ncipollo/release-action@v1
+        # see https://github.com/marketplace/actions/create-release
+        with:
+          artifacts: "build/${{env.mfile_package}}.mpackage,version.txt"
+          allowUpdates: true
+          bodyFile: "./README.md"
+          tag: ${{ env.mfile_version }}

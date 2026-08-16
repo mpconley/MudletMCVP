@@ -1,0 +1,8 @@
+{
+       "package": "MCVP",
+       "title": "MudletMCVP",
+       "description": "Mudlet consumer package for the MUD Client Vocabulary Protocol (Client.Vocabulary over GMCP).",
+       "version": "1",
+       "author": "Tamarindo",
+       "outputFile": true
+}

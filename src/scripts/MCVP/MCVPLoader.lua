@@ -98,6 +98,13 @@ function mcvp._onUpdate()
   local payload = gmcp and gmcp.Client and gmcp.Client.Vocabulary and gmcp.Client.Vocabulary.Update
   if type(payload) ~= "table" then return end
 
+  -- Fault injection (mcvp.debug.dropNextUpdate): simulate a lost frame so the
+  -- from-chain recovery can be exercised against a live server
+  if mcvp._dropNextUpdate then
+    mcvp._dropNextUpdate = nil
+    return
+  end
+
   local ok, why = mcvp.merge.applyUpdate(mcvp._state, payload)
   if ok then
     mcvp._seenVersions[mcvp._state.version] = true

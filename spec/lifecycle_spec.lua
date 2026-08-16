@@ -100,3 +100,46 @@ describe("mcvp lifecycle", function()
     assert.equals("Client.Vocabulary", sent[#sent])
   end)
 end)
+
+describe("mcvp fault injection", function()
+  local sent
+
+  before_each(function()
+    sent = {}
+    _G.sendGMCP = function(msg) sent[#sent + 1] = msg end
+    _G.tempTimer = function() end
+    _G.raiseEvent = function() end
+    _G.registerAnonymousEventHandler = function() return 1 end
+    _G.killAnonymousEventHandler = function() end
+    _G.getMudletHomeDir = function() return "." end
+    _G.echo = function() end
+    _G.table.save = function() end
+    _G.table.load = function() end
+    _G.gmcp = nil
+    _G.mcvp = nil
+    dofile("src/scripts/MCVP/MCVPMerge.lua")
+    dofile("src/scripts/MCVP/MCVPLoader.lua")
+    dofile("src/scripts/MCVP/MCVPDebug.lua")
+  end)
+
+  it("drops exactly one armed Update, and the chain break recovers", function()
+    _G.gmcp = { Client = { Vocabulary = { Catalog = {
+      version = "v1", categories = { commands = { priority = 1, entries = { { word = "kill" } } } },
+    }}}}
+    mcvp._onCatalog()
+
+    mcvp.debug.dropNextUpdate()
+    _G.gmcp = { Client = { Vocabulary = { Update = {
+      version = "v2", from = "v1", categories = { commands = { add = { { word = "peer" } } } },
+    }}}}
+    mcvp._onUpdate()                       -- dropped: simulated transport loss
+    assert.equals("v1", mcvp.version())
+
+    _G.gmcp = { Client = { Vocabulary = { Update = {
+      version = "v3", from = "v2", categories = { commands = { add = { { word = "wave" } } } },
+    }}}}
+    mcvp._onUpdate()                       -- from mismatch -> one re-request
+    assert.equals("v1", mcvp.version())
+    assert.equals("Client.Vocabulary", sent[#sent])
+  end)
+end)

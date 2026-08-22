@@ -1,0 +1,328 @@
+__NOINDEX__
+<div style="border:2px solid #a00; background:#fff3f3; color:#a00; padding:0.5em 1em; margin:1em 0; text-align:center; font-weight:bold;">
+DRAFT — This specification is under discussion and subject to change. Do not implement against this text.
+</div>
+
+= MUD Client Vocabulary Protocol (MCVP) =
+
+== A Standard for Publishing a Game's Command Vocabulary to MUD Clients over GMCP ==
+
+== Status of this Memo ==
+
+This memo describes the addition of a standardized namespace of the Generic Mud Communication Protocol (GMCP) telnet sub-negotiation protocol (201) that provides syntax and usage guidance for sending JSON formatted messages from game servers to text-based game clients describing the words, shortcuts and command patterns available to a character.
+
+== Overview and Rationale ==
+
+Every game defines its own language — commands, socials, channels, directions, player-defined shortcuts — and today that language is undocumented folklore that each player's client rediscovers by screen-scraping, if at all. The server is the sole authority on its own vocabulary; this protocol makes that authority available to clients as structured data.
+
+The motivating consumer is speech recognition: on-device speech-to-text engines support vocabulary biasing and correction that can substantially improve recognition of game commands, but only when the client knows which words the player is likely to say. The same data serves tab-completion, command discovery for new players, syntax hinting, and text-to-speech pronunciation of game-specific terms. A client implements the protocol once and gains these capabilities on every conforming game; a game implements it once and improves every conforming client.
+
+The design is shaped by a practical constraint of speech engines: biasing lists degrade recognition when they grow past a few hundred entries. The protocol therefore carries priorities and budgets, assigned by the server, so that scarce biasing capacity is spent on the vocabulary a character actually uses.
+
+That constraint is sharper than it sounds, and the first implementations measured it: a list that is merely large does not simply stop helping, it actively harms. Biasing toward an entire tier-1 catalog scored worse than biasing toward nothing at all, because the words a player is about to say — the things in front of them — were not in it, while short command words the recognizer already heard correctly were. What the budget is spent on matters more than how it is filled.
+
+== Overview of the GMCP (201) Sub-negotiation Protocol ==
+
+To recap, the GMCP protocol is a bidirectional telnet sub-negotiation protocol (See RFC 854) which fulfills the following conditions:
+
+* GMCP is separated into several ‘namespaces’, which may be enabled or disabled by the client at any time. The ‘Core’ namespace is always enabled and may not be disabled. Namespaces should consist of case-insensitive alphabetical characters and stop characters (. - ASCII 46/0x2E), representable as [A-Za-z.].
+* GMCP messages consist of the namespace and a command (case insensitive alpha characters) delineated by a stop character, and optionally a space character and JSON-encoded payload.
+* GMCP messages may be sent by both the client or server at any time with no warning.
+
+== Update to namespace: Client.* for Client.Vocabulary ==
+
+We are proposing an addition to the Client.* meta-namespace for Client.Vocabulary. This serves the purpose of reserving this namespace for publishing game vocabulary to clients and supporting future expansion and integration.
+
+== Design Principles ==
+
+* '''One-directional forever.''' The server publishes vocabulary and nothing else. Nothing in this protocol requests, receives, or stores anything about what a client recognized, spoke, completed or corrected. Extensions MUST preserve this property.
+* '''Data, not code.''' The catalog is descriptive. It carries no executable content, no trigger patterns, and no instructions — a client interprets it entirely on its own terms.
+* '''The catalog is personal.''' It describes what one character can say, not what the game contains: that character's available commands, readable channels, and own shortcuts. A player's shortcuts are sent only to that player's own client.
+* '''The catalog is durable.''' It carries the vocabulary that outlives a moment: commands, socials, channels, directions, shortcuts. It does not carry the things standing in front of a character, which change with every step and would defeat the caching and version identity the rest of this protocol is built on. Those are bound by the client from data the game already publishes; see [[#Syntax Patterns|Syntax Patterns]].
+* '''Fail safe.''' Wherever a client meets something it cannot interpret — an unknown category, field, slot class or flag value — the required reading is the conservative one. In particular, this data nudges a speech recognizer toward saying things, so anything ambiguous is excluded from that nudge rather than included.
+* '''Lineage is protocol-verified; content is a server obligation.''' Incremental updates carry the version they apply on top of, so a client can detect a broken chain. It cannot verify content: correctness of each link is the server's responsibility alone.
+
+== Negotiation and Lifecycle ==
+
+The package is never sent unnegotiated. A client opts in through the standard Core.Supports mechanism:
+
+<syntaxhighlight lang="json">
+Core.Supports.Set ["Client.Vocabulary 1", ...]
+</syntaxhighlight>
+
+A server SHOULD accept any advertised version greater than or equal to 1 and speak the highest version it supports that does not exceed the client's, rather than comparing strictly against one value.
+
+After negotiation the server sends one full <code>Client.Vocabulary.Catalog</code>. After that it sends again only when the catalog content changes — either a fresh Catalog or an incremental <code>Client.Vocabulary.Update</code>.
+
+* '''Re-request:''' a client may request the full Catalog at any time by sending the bare package name <code>Client.Vocabulary</code> as a GMCP message; the server answers with a full Catalog even when the version is unchanged. Servers MAY throttle catalog rebuilds and answer from a held copy inside the throttle window; clients therefore treat an identical-version response as success and MUST NOT build retry loops around re-requests.
+* '''Reconnect:''' the server always starts a session with a full Catalog. An Update is never the first vocabulary message of a session; a client receiving one MUST discard it and issue a single re-request.
+* '''Withdrawal:''' <code>Core.Supports.Remove</code> stops all vocabulary traffic. A later re-add starts over with an unsolicited full Catalog; the client does not pair the re-add with a re-request. A client's locally cached catalog survives withdrawal and may satisfy the new Catalog by version match.
+
+== Field Encoding ==
+
+Boolean-valued fields in this protocol are declared as <code>true</code> or <code>false</code>, and that is their canonical encoding. However, several MUD drivers have no JSON boolean in their serializer at all — LDMud's <code>json_serialize()</code>, for example, maps integers to JSON numbers and offers no <code>true</code>/<code>false</code> — so a server obliged to report one may have nothing canonical to send. A server MAY therefore send any boolean field as a JSON boolean, as the string <code>"true"</code>/<code>"false"</code>, or as the integer <code>1</code>/<code>0</code>; clients MUST accept all three forms and understand them as the boolean they represent after parsing. Servers SHOULD send a JSON boolean where the serializer can produce one, SHOULD NOT vary the encoding of a given field within one connection, and SHOULD omit an optional boolean field entirely rather than sending its false value.
+
+For the safety flag <code>protected</code>, lenient parsing is deliberately asymmetric: a client MUST treat any present value as true unless it is explicitly <code>false</code>, <code>0</code>, <code>"0"</code> or <code>"false"</code> (matched case-insensitively). The field exists only to mark words that are dangerous to steer input toward, so a server that encodes it sloppily may only fail in the safe direction.
+
+Integer fields (<code>priority</code>) may arrive as strings; clients accept numeric strings, and values that parse to nothing valid fall back to the documented default.
+
+Empty collections have the same difficulty as booleans, and for the same reason. A driver with no distinct empty-array form may render an empty <code>entries</code>, <code>aliases</code>, <code>add</code> or <code>remove</code> as the empty string <code>""</code> rather than as <code>[]</code>; this is observable today in packages neighbouring this one on a reference implementation. A client MUST therefore treat an empty string where an array or object is expected as an empty collection, not as a malformed message — the distinction matters, because a client that rejects the message instead discards a valid Update and breaks its own chain. Servers SHOULD omit an empty optional collection entirely, and SHOULD omit a category with no entries rather than sending an empty one.
+
+== Messages ==
+
+All vocabulary messages flow server to client. There are exactly two.
+
+==== Client.Vocabulary.Catalog ====
+
+* Package: Client.Vocabulary.Catalog
+* Purpose: Deliver the complete vocabulary catalog for the connected character.
+* Guidance: Sent once after negotiation, on reconnect, in answer to a re-request, and whenever a change cannot be expressed as an Update.
+
+Syntax:
+<syntaxhighlight lang="json">Client.Vocabulary.Catalog {
+  "version": "opaque-content-hash",
+  "categories": {
+    "commands":   { "priority": 1, "entries": [
+        { "word": "kill", "syntax": "kill %living", "aliases": ["attack"] },
+        { "word": "tell", "syntax": "tell %player %text" },
+        { "word": "get", "syntax": "get %item" },
+        { "word": "mudlist", "priority": 3 },
+        { "word": "quit", "priority": 3, "protected": true }
+    ]},
+    "socials":    { "priority": 2, "entries": [ { "word": "wave" }, { "word": "grin" } ] },
+    "directions": { "priority": 1, "entries": [ { "word": "north", "aliases": ["n"] } ] },
+    "channels":   { "priority": 2, "entries": [ { "word": "gossip", "syntax": "gossip %text" } ] },
+    "nicknames":  { "priority": 1, "entries": [
+        { "word": "gc", "expansion": "guild chat", "position": "leading" } ] },
+    "helptopics": { "priority": 3, "entries": [ { "word": "combat" }, { "word": "tips and tricks" } ] }
+  }
+}</syntaxhighlight>
+
+Usage:
+{| class="wikitable"
+! Required
+! Key
+! Value
+! style="text-align:left;"| Purpose
+|- style="color: green;"
+| style="text-align:center;"| Yes
+| "version"
+| <opaque string>
+| style="text-align:left;"|
+* Identifies this catalog state; stable for identical content across sessions and server restarts.
+* Implementations commonly use a content hash computed over a canonical rendering.
+* Clients MUST treat it as an opaque cache key: compare for equality, never recompute.
+|- style="color: green;"
+| style="text-align:center;"| Yes
+| "categories"
+| <object>
+| style="text-align:left;"|
+* Maps category names to category objects.
+* Standard categories: <code>commands</code>, <code>socials</code>, <code>directions</code>, <code>channels</code>, <code>nicknames</code>, <code>helptopics</code>.
+* Clients MUST ignore categories they do not recognize; new categories are non-breaking by definition.
+|}
+
+Each category object carries a <code>priority</code> (the default tier for every entry in it) and an <code>entries</code> array. Entry fields:
+
+{| class="wikitable"
+! Required
+! Key
+! Value
+! style="text-align:left;"| Purpose
+|- style="color: green;"
+| style="text-align:center;"| Yes
+| "word"
+| <string>
+| style="text-align:left;"|
+* The canonical spoken form: lowercase ASCII, deduplicated within the category.
+* Abbreviations belong in <code>aliases</code>, never as separate peer entries.
+|-
+| style="text-align:center;"| No
+| "priority"
+| 1 to 3
+| style="text-align:left;"|
+* Per-entry override of the category default. See [[#Priorities and Budgets|Priorities and Budgets]].
+* Clients that ignore the override merely over-bias; nothing breaks.
+|-
+| style="text-align:center;"| No
+| "syntax"
+| <pattern>
+| style="text-align:left;"|
+* A one-line pattern for what may follow the word. See [[#Syntax Patterns|Syntax Patterns]].
+|-
+| style="text-align:center;"| No
+| "aliases"
+| <array of strings>
+| style="text-align:left;"|
+* Alternative accepted forms (<code>n</code> for <code>north</code>).
+* An alias inherits its entry's priority, position and <code>protected</code> flag; it is never independently biasable or correctable.
+|-
+| style="text-align:center;"| No
+| "expansion"
+| <string>
+| style="text-align:left;"|
+* What a shortcut sends when used, so a client can display or speak its meaning. Typical on <code>nicknames</code>.
+|-
+| style="text-align:center;"| No
+| "position"
+| "leading" or "argument"
+| style="text-align:left;"|
+* Where the word is valid in a line, for games whose parsers enforce a positional split between verb shortcuts and argument fillers.
+* Omitted means valid anywhere. A client meeting an unrecognized value MUST exclude the entry from correction (fail closed).
+* Entry identity within a category is (word, position).
+|-
+| style="text-align:center;"| No
+| "protected"
+| true or false
+| style="text-align:left;"|
+* Marks a word the server judges dangerous to steer input toward. See [[#The protected Flag|The protected Flag]].
+* May also arrive as <code>"true"</code>/<code>"false"</code> or <code>1</code>/<code>0</code> per [[#Field Encoding|Field Encoding]]; servers omit the field rather than sending false.
+|}
+
+==== Client.Vocabulary.Update ====
+
+* Package: Client.Vocabulary.Update
+* Purpose: Deliver an incremental change to a catalog already held by the client.
+* Guidance: Sent only after a Catalog has been delivered in the same session, for changes the delta format can express.
+
+Syntax:
+<syntaxhighlight lang="json">Client.Vocabulary.Update {
+  "version": "opaque-hash-of-new-content",
+  "from": "opaque-hash-of-previous-content",
+  "categories": {
+    "commands":  { "add": [ { "word": "shapeshift" } ], "remove": [ "meditate" ] },
+    "nicknames": { "add": [ { "word": "gg", "expansion": "guild greet", "position": "leading" } ] }
+  }
+}</syntaxhighlight>
+
+Processing rules, all of which are requirements:
+
+* '''Chain check first.''' <code>from</code> names the catalog version this Update applies on top of. A client MUST apply an Update only when <code>from</code> equals its current merged version; on mismatch it discards the Update and issues a single re-request. This converts a lost or misordered frame — otherwise a silent, permanent divergence — into detected, bounded recovery.
+* '''Removes before adds.''' All <code>remove</code> lists are applied before any <code>add</code> list is consulted. <code>remove</code> carries bare words and removes every position of that word; surviving positions arrive in <code>add</code> within the same Update. Example: a category holding <code>zz</code>/argument and <code>zz</code>/leading, dropping the argument form, wires as <code>"remove": ["zz"], "add": [{ "word": "zz", "position": "leading" }]</code> — a client applying adds first would delete the survivor it was just given.
+* '''Add is replace.''' An <code>add</code> entry carries the complete entry object, both for new words and for words whose content changed; the client replaces its entry wholesale. An Update whose only change to an entry is its <code>priority</code> is legitimate — tier budgets rebalance globally, so a small change elsewhere can demote an unrelated entry.
+* '''Structure never travels by delta.''' A category appearing, disappearing, or changing its default <code>priority</code> MUST NOT be expressed as an Update; the server sends a full Catalog instead. Clients may therefore cache category defaults from the last Catalog and treat them as immutable while applying Updates.
+* '''No baseline, no Update.''' An Update received before any Catalog in the current session has no baseline; the client discards it and issues a single re-request. (This is the chain check's degenerate case, stated explicitly.)
+* After applying an Update, the client's merged state equals the Catalog the server would send at that moment, and <code>version</code> identifies that state.
+
+== Messages at a glance ==
+
+{| class="wikitable"
+! Direction !! Message !! Purpose
+|-
+| Client → Server || <code>Core.Supports.Set ["Client.Vocabulary 1"]</code> || opt in
+|-
+| Client → Server || <code>Client.Vocabulary</code> (bare, no payload) || request a full Catalog (one-shot; no retry loops)
+|-
+| Server → Client || <code>Client.Vocabulary.Catalog</code> || full snapshot of the character's vocabulary
+|-
+| Server → Client || <code>Client.Vocabulary.Update</code> || incremental delta, chained by <code>from</code>
+|}
+
+== Priorities and Budgets ==
+
+Priorities are a budget signal assigned by the server; the client trusts them.
+
+{| class="wikitable"
+! Tier !! Meaning
+|-
+| 1 || Feed to recognizer biasing. Scarce: engines degrade past a few hundred words.
+|-
+| 2 || Biasing only if capacity remains after tier 1; otherwise treated as tier 3.
+|-
+| 3 || Completion and correction only. Never biasing.
+|}
+
+Servers SHOULD keep tier 1 at or under 300 entries across all categories combined and tier 2 at or under 500; tier 3 is uncapped. When a tier would overflow, the server demotes entries by per-entry override using a rule that is deterministic for identical content — never one driven by volatile state such as in-memory usage counters, which would destabilize the version hash between otherwise identical logins.
+
+Priority is a budget signal and <code>protected</code> is a safety signal; neither may be inferred from the other. On the wire, a word demoted for danger and a word demoted by budget overflow look identical — which is exactly why the flag exists.
+
+Tier 1 is a ceiling, not a target. It is shared with whatever a client binds from dynamic context, and a client is expected to prefer those words when the two compete — so a server that fills tier 1 to the cap should expect the tail of it to go unused at the moment of speaking. A server that can distinguish the vocabulary a character uses constantly from the vocabulary they merely possess serves its clients better by leaving room than by claiming it.
+
+== Syntax Patterns ==
+
+Slot classes are a small closed set:
+
+{| class="wikitable"
+! Class !! Fills with
+|-
+| <code>%living</code> || a creature present, bindable from room-content data the client already has
+|-
+| <code>%item</code> || an object in inventory or the room
+|-
+| <code>%player</code> || a player name, bindable from who-list data
+|-
+| <code>%direction</code> || an exit or direction
+|-
+| <code>%word</code> || one argument drawn from the catalog itself, possibly a multi-word entry (<code>help %word</code> filled from <code>helptopics</code>, whose entries include names like <code>tips and tricks</code>); correctable and completable toward the categories that plausibly fill it
+|-
+| <code>%text</code> || free prose; always the final slot in a pattern; a client MUST never correct, complete or bias any span it covers
+|}
+
+The <code>%text</code> distinction is not cosmetic. Message bodies — says, tells, whispers, every channel — are the player's own words, and a client that fuzzy-corrects them rewrites what the player actually said, in front of everyone reading. Any pattern whose tail is a player's own words must end in <code>%text</code>. Patterns with two slots put the correctable one first — <code>tell %player %text</code> keeps the name correctable and walls off the body — and slot boundaries come from the pattern, never from whitespace guessing.
+
+Four of these classes — <code>%living</code>, <code>%item</code>, <code>%player</code>, <code>%direction</code> — are filled from the game's own live data rather than from this catalog, and that is deliberate: the things a character can reach change with every step, and carrying them here would churn the version hash continuously and defeat the caching the rest of this protocol depends on. This protocol therefore describes no schema, path or package name for that data. Games encode it too differently for a description to survive contact — one reference implementation distinguishes a creature from a wearable object by a single-character attribute whose legend lives in the server's own source — so a client binds these slots through a small adapter per GMCP dialect, and the vocabulary consumer behind that adapter stays game-neutral. See [[#Guidance for Client Implementors|Guidance for Client Implementors]].
+
+There is deliberately no grammar language beyond these six classes. Implementors are urged to resist per-category slots (<code>%topic</code>, <code>%channel</code>, <code>%social</code>): that road ends in a grammar wearing a disguise, and <code>%word</code> already carries "one argument from the catalog" for all of them. A client that meets a <code>%class</code> it does not recognize MUST treat the whole pattern as unparseable and apply no slot correction to that entry — which makes any future addition a non-event for older clients.
+
+== The protected Flag ==
+
+<code>protected</code> marks words the server judges dangerous to steer input toward — leaving play, and choices a character cannot take back. A protected word:
+
+* is never a member of a biasing list, at any tier;
+* is never a fuzzy-correction target;
+* may still be offered by completion, and an exact match — spoken or typed — always passes through untouched. The flag governs what the client ''injects'', never what the player said. A player who says "quit" quits.
+
+Servers SHOULD also hold protected words out of tier 1, since a word that can never be biased has no use for a scarce biasing slot, and SHOULD apply the flag uniformly across every command source. The protected set is server-defined and expected to grow; clients MUST read the flag rather than mirror or hardcode any word list, so the two can never drift.
+
+== Security and Privacy ==
+
+* The one-directional principle is absolute: no conforming implementation sends recognition, completion or correction data to any server, and no extension may add such a channel. Client-side caches of the catalog are local to the game profile.
+* A player's own shortcuts (<code>nicknames</code>) and their expansions are sent only to that player's client. Catalogs are built per character; command sets gated by privilege are omitted for characters without the privilege.
+* The catalog is data, not code. It contains no executable content and no patterns intended for client-side matching against game output; clients MUST NOT execute or evaluate any part of it.
+* A client connects to arbitrary servers of the player's choosing, so catalogs must be safe to receive from a hostile peer: clients SHOULD enforce their own size bounds when merging, and MAY apply their own judgment before biasing toward words they consider destructive regardless of flags — <code>protected</code> is a cooperative signal, not a trusted one.
+* Words a client binds from dynamic context are words the server has already sent it for other purposes; binding them confers no new access and creates no new channel. They are held for the session only and are never written to a cache keyed by catalog version, which describes published vocabulary alone.
+
+== Size and Pagination ==
+
+A full catalog for a typical character is on the order of a thousand entries and a few tens of kilobytes of JSON, which fits comfortably in a single GMCP frame. A server with a much larger vocabulary may split a Catalog by category across several frames sharing the same <code>version</code>; clients should merge categories from same-version Catalog frames additively.
+
+== Guidance for Server Implementors ==
+
+* '''Build from the live sources of truth''' — command tables, social daemons, channel permission checks, the player's own shortcut storage — never from documentation files, which drift from code.
+* '''Keep the version hash stable.''' Compute it over a canonical rendering (categories sorted, entries sorted, fields in fixed order), never over serialized JSON text, and never from volatile state.
+* '''Throttle rebuilds.''' Catalog construction is typically the most expensive request a client can trigger; a minimum interval between rebuilds, answering interim requests from the held copy, protects the game loop. Ensure the held copy reflects every Update already emitted, so a served Catalog is never older than the latest delta.
+* '''Push what you can; document what you don't.''' Hook the changes you can observe (shortcut edits, ability grants) to emit Updates, and say plainly which changes are only reflected on the next Catalog. Clients are required to tolerate staleness for unpushed changes; they are not required to guess which changes those are.
+* '''Spend tier 1 on the verbs a character actually says.''' A two-letter administrative command occupies the same scarce slot as a spell the character casts constantly, and costs more than it returns: a client that biases toward a short word will hear it in place of the longer word it abbreviates. Demote what is rarely spoken and what is barely a word.
+* '''Provide an offline inspection command''' that prints the catalog any character would receive, tier counts against the budgets, and a version-stability check — and a regression assertion that a category-default change yields no delta. That last property earns a permanent test because its failure has no symptom.
+
+== Guidance for Client Implementors ==
+
+* Cache the merged catalog keyed by <code>version</code>; an arriving Catalog matching a cached version needs no re-parse.
+* Keep one defensive rule even though servers make it unreachable in normal operation: if a Catalog ever arrives bearing a version older than the current merged state, keep the merged state and schedule a single re-request.
+* Bind slot classes to whatever room, inventory and player data the connected game already publishes; those packages vary by game, so an adapter layer per GMCP dialect keeps the vocabulary consumer itself game-neutral. Sample dynamic context when input capture begins (a push-to-talk press, a completion request) rather than chasing every state update.
+* '''Spend the biasing budget on what is about to be said.''' Dynamic context and the catalog compete for one small allowance, and they are not equally valuable: the thing standing in the room is a word the player is about to speak, while much of the catalog is vocabulary the recognizer already handles. Fill the list from context first and let the catalog take what remains. A first implementation that did the reverse — an entire tier-1 catalog, no context — measured worse than biasing toward nothing at all.
+* '''Reduce a game's display names to the words a player speaks.''' Live data names things for reading, not for saying: an object presented as "A bottle of beer" is spoken as "get beer" or "get bottle", so bind the content words and drop the articles. Deduplicate what remains — a single room may hold thirty copies of one object, and thirty copies of one word exhaust an allowance while adding nothing.
+* '''Leave the shortest words out of biasing.''' One- and two-letter forms are abbreviations, and steering a recognizer toward them makes it prefer the abbreviation to the word: an implementation biasing toward a direction alias heard "north" as "n". Correction and completion may still use them.
+* Where a game's live data does not let a client tell a creature from an object, bias toward the union of both — biasing needs no classification — and withhold only the slot-specific correction that does, per the fail-safe principle.
+* Honor <code>position</code> in correction and completion: leading-only words are candidates at the start of a line, argument-only words after it. A game's parser may enforce this split; correcting a leading word toward an argument-only shortcut manufactures a line the game cannot expand.
+* Merged state may lag changes the server does not push (privilege changes, new help topics) until the next Catalog; treat this as an accepted property, not a defect.
+
+== Versions ==
+
+* Version 1.0: Initial specification by Mike Conley (mike.conley[at]stickmud.com) on 15-AUG-2026.
+* Version 1.0.1: Clarifications drawn from the first server and client implementations, on 19-AUG-2026. Empty collections are documented alongside the other driver encoding quirks; the durability of the catalog is stated as a design principle, and the dynamic slot classes say plainly why this protocol describes no schema for the data that fills them; guidance is added on how a shared biasing budget should be spent. No change to the wire format — a version 1 client and a version 1 server interoperate exactly as before.
+
+== Advertise Support for MCVP ==
+
+Consider advertising your game's support of MCVP (and GMCP) to mud lists via the Mud Server Status Protocol, [[Special:MyLanguage/Manual:Supported_Protocols#MSSP|MSSP]], by providing a MSSP variable of "MCVP" and value of "1".
+
+== Authors ==
+
+* Mike Conley (Tamarindo, Administrator at StickMUD and Mudlet contributor) mike.conley[at]stickmud.com
+
+== Implementations ==
+
+* Servers implementing this specification:
+** StickMUD — reference server implementation.
+* Clients implementing this specification:
+** Mudlet — vocabulary consumer package (in development), feeding speech-to-text biasing and correction.

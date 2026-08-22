@@ -15,7 +15,7 @@ This memo describes the addition of a standardized namespace of the Generic Mud 
 
 Every game defines its own language — commands, socials, channels, directions, player-defined shortcuts — and today that language is undocumented folklore that each player's client rediscovers by screen-scraping, if at all. The server is the sole authority on its own vocabulary; this protocol makes that authority available to clients as structured data.
 
-The motivating consumer is speech recognition: on-device speech-to-text engines support vocabulary biasing and correction that can substantially improve recognition of game commands, but only when the client knows which words the player is likely to say. The same data serves tab-completion, command discovery for new players, syntax hinting, and text-to-speech pronunciation of game-specific terms. A client implements the protocol once and gains these capabilities on every conforming game; a game implements it once and improves every conforming client.
+The motivating consumer is speech recognition: on-device speech-to-text engines can be told which words to expect — ''biasing'', explained under [[#Priorities and Budgets|Priorities and Budgets]] — and can repair a near-miss against a known word list, both of which substantially improve recognition of game commands, but only when the client knows which words the player is likely to say. The same data serves tab-completion, command discovery for new players, syntax hinting, and text-to-speech pronunciation of game-specific terms. A client implements the protocol once and gains these capabilities on every conforming game; a game implements it once and improves every conforming client.
 
 The design is shaped by a practical constraint of speech engines: biasing lists degrade recognition when they grow past a few hundred entries. The protocol therefore carries priorities and budgets, assigned by the server, so that scarce biasing capacity is spent on the vocabulary a character actually uses.
 
@@ -142,7 +142,7 @@ Each category object carries a <code>priority</code> (the default tier for every
 | 1 to 3
 | style="text-align:left;"|
 * Per-entry override of the category default. See [[#Priorities and Budgets|Priorities and Budgets]].
-* Clients that ignore the override merely over-bias; nothing breaks.
+* A client that ignores the override merely steers toward more words than the server intended; nothing breaks.
 |-
 | style="text-align:center;"| No
 | "syntax"
@@ -220,23 +220,30 @@ Processing rules, all of which are requirements:
 
 == Priorities and Budgets ==
 
+Speech recognition can be ''steered'': a client may hand the engine a short list of words to expect, and a word on that list is much more likely to be heard correctly when the player says it. The list is small — most engines get ''worse'' if it runs much past a few hundred words — so it is a budget being spent, and the priority on each entry is how a server says where to spend it. This is the sense in which this document uses '''biasing''' throughout.
+
 Priorities are a budget signal assigned by the server; the client trusts them.
 
 {| class="wikitable"
-! Tier !! Meaning
+! Tier !! What a client may do with these words !! What belongs here
 |-
-| 1 || Feed to recognizer biasing. Scarce: engines degrade past a few hundred words.
+| 1 || Steer the recognizer toward them, so a player saying one is much more likely to be heard correctly. This is the scarce list — keep it small.
+| The words this character says constantly: movement, combat, the verbs of their guild.
 |-
-| 2 || Biasing only if capacity remains after tier 1; otherwise treated as tier 3.
+| 2 || The same, but only if the client has room left after tier 1. A client with no room treats these as tier 3.
+| Said regularly but not constantly: socials, channels.
 |-
-| 3 || Completion and correction only. Never biasing.
+| 3 || Never steered toward — but still used to repair a near-miss (''shapeshit'' → ''shapeshift'') and to offer completions as the player types.
+| Everything else the character can say: rarely used commands, help topics, administrative verbs.
 |}
+
+Tier 3 is not a discard pile. Most of a game's vocabulary belongs there, and it is doing real work: repairing near-misses and completing what a player has started to type both need the full vocabulary, and neither costs the recognizer anything.
 
 Servers SHOULD keep tier 1 at or under 300 entries across all categories combined and tier 2 at or under 500; tier 3 is uncapped. When a tier would overflow, the server demotes entries by per-entry override using a rule that is deterministic for identical content — never one driven by volatile state such as in-memory usage counters, which would destabilize the version hash between otherwise identical logins.
 
 Priority is a budget signal and <code>protected</code> is a safety signal; neither may be inferred from the other. On the wire, a word demoted for danger and a word demoted by budget overflow look identical — which is exactly why the flag exists.
 
-Tier 1 is a ceiling, not a target. It is shared with whatever a client binds from dynamic context, and a client is expected to prefer those words when the two compete — so a server that fills tier 1 to the cap should expect the tail of it to go unused at the moment of speaking. A server that can distinguish the vocabulary a character uses constantly from the vocabulary they merely possess serves its clients better by leaving room than by claiming it.
+Tier 1 is a ceiling, not a target. It is shared with whatever a client binds from the game's live data — the creatures and objects in front of the character — and a client is expected to prefer those words when the two compete, so a server that fills tier 1 to the cap should expect the tail of it to go unused at the moment of speaking. A server that can distinguish the vocabulary a character uses constantly from the vocabulary they merely possess serves its clients better by leaving room than by claiming it.
 
 == Syntax Patterns ==
 
@@ -268,7 +275,7 @@ There is deliberately no grammar language beyond these six classes. Implementors
 
 <code>protected</code> marks words the server judges dangerous to steer input toward — leaving play, and choices a character cannot take back. A protected word:
 
-* is never a member of a biasing list, at any tier;
+* is never one of the words a client steers the recognizer toward, at any tier;
 * is never a fuzzy-correction target;
 * may still be offered by completion, and an exact match — spoken or typed — always passes through untouched. The flag governs what the client ''injects'', never what the player said. A player who says "quit" quits.
 
@@ -311,7 +318,7 @@ A full catalog for a typical character is on the order of a thousand entries and
 
 * Version 1.0: Initial specification by Mike Conley (mike.conley[at]stickmud.com) on 15-AUG-2026.
 * Version 1.0.1: Clarifications drawn from the first server and client implementations, on 19-AUG-2026. Empty collections are documented alongside the other driver encoding quirks; the durability of the catalog is stated as a design principle, and the dynamic slot classes say plainly why this protocol describes no schema for the data that fills them; guidance is added on how a shared biasing budget should be spent. No change to the wire format — a version 1 client and a version 1 server interoperate exactly as before.
-* Version 1.0.2: The biasing measurements cited in 1.0.1 are withdrawn, on 22-AUG-2026. They were taken through a client whose engine integration compiled the biasing words in but applied them with a weight of zero, so both conditions ran effectively unbiased and the reported differences were noise. The first valid measurement — StickMUD against the Mudlet consumer package, three passes per condition at matched input levels — found biasing a budget-sized list improved exact recognition markedly (21/21 against 17/21 in the deciding run), with the leading command verb the word most often rescued; the effect's direction is established, its size not yet pinned. Rationale and guidance text are corrected accordingly. The budgets, tiers and context-first guidance are unchanged, and there is no change to the wire format.
+* Version 1.0.2: Editorial and corrective, on 22-AUG-2026. '''Priorities and Budgets''' is rewritten after review feedback that its table assumed the reader already knew what speech-recognition biasing is: the term is now explained in plain language where it is first needed, the tier table says what a client does with each tier ''and'' what belongs there, and tier 3 is stated to be where most of a game's vocabulary belongs rather than a discard pile. The biasing measurements cited in 1.0.1 are withdrawn. They were taken through a client whose engine integration compiled the biasing words in but applied them with a weight of zero, so both conditions ran effectively unbiased and the reported differences were noise. The first valid measurement — StickMUD against the Mudlet consumer package, three passes per condition at matched input levels — found biasing a budget-sized list improved exact recognition markedly (21/21 against 17/21 in the deciding run), with the leading command verb the word most often rescued; the effect's direction is established, its size not yet pinned. Rationale and guidance text are corrected accordingly. The budgets, tiers and context-first guidance are unchanged, and there is no change to the wire format.
 
 == Advertise Support for MCVP ==
 

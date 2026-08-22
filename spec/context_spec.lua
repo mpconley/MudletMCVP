@@ -118,6 +118,20 @@ describe("mcvp.context", function()
       assert.has_error(function() context.register(nil) end)
     end)
 
+    -- A package being uninstalled tears down after its replacement has
+    -- already registered, so an unqualified unregister takes the new adapter
+    -- down with the old one
+    it("ignores an unregister from an adapter that is no longer bound", function()
+      local old = { events = {}, read = function() return nil end }
+      local new = { events = {}, read = function() return nil end }
+      context.register(old)
+      context.register(new)
+      assert.is_false(context.unregister(old))
+      assert.is_true(context.bound(), "the replacement was unregistered by its predecessor")
+      assert.is_true(context.unregister(new))
+      assert.is_false(context.bound())
+    end)
+
     it("reports whether anyone is telling us what is in reach", function()
       context.unregister()
       assert.is_false(context.bound())

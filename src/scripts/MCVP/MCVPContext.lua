@@ -168,7 +168,15 @@ function context.register(adapter)
   end
 end
 
-function context.unregister()
+--- Stop binding in-reach words.
+-- Pass the adapter to unregister only that one: a package being uninstalled
+-- tears down after its replacement has already registered, and a bare
+-- unregister() would take the new adapter down with the old one - leaving a
+-- freshly installed package bound to nothing and no error anywhere.
+function context.unregister(adapter)
+  if adapter ~= nil and context._adapter ~= adapter then
+    return false
+  end
   if type(killAnonymousEventHandler) == "function" then
     for _, id in pairs(context._handlers) do
       killAnonymousEventHandler(id)
@@ -177,6 +185,7 @@ function context.unregister()
   context._handlers = {}
   context._adapter = nil
   context.state = context.newState()
+  return true
 end
 
 --- Whether a game's adapter is wired up, which is what a consumer checks

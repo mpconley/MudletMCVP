@@ -199,6 +199,22 @@ function merge.entries(state, opts)
       end
     end
   end
+
+  -- A biasing list is a budget, and the caller fills it until the budget runs
+  -- out - so whatever this returns first is what survives the cut. Category
+  -- and entry iteration above is pairs(), which is hash order: unordered, and
+  -- different between sessions. Returned that way, a tier 1 word takes its
+  -- chances against tier 2 for a place in the list, which is the opposite of
+  -- what the protocol says ("tier 2 ... only if the client has room left after
+  -- tier 1"), and no two logins bias the same way. Sorting by tier, then by
+  -- word so the order is stable across sessions, is what makes the budget mean
+  -- what the server said and a measurement repeatable.
+  if opts.biasable then
+    table.sort(out, function(a, b)
+      if a.priority ~= b.priority then return a.priority < b.priority end
+      return a.word < b.word
+    end)
+  end
   return out
 end
 

@@ -24,6 +24,49 @@ describe("mcvp.merge", function()
     })))
   end)
 
+  describe("biasable ordering", function()
+    -- The consumer fills a small budget from the front of this list, so the
+    -- order decides which words are biased at all.
+    before_each(function()
+      state = merge.new()
+      assert.is_true(merge.applyCatalog(state, catalog("v2", {
+        commands = { priority = 2, entries = {
+          { word = "zebra", priority = 1 },
+          { word = "alpha" },
+          { word = "bravo" },
+        }},
+        socials = { priority = 2, entries = {
+          { word = "aardvark" },
+          { word = "yak", priority = 1 },
+        }},
+        helptopics = { priority = 3, entries = { { word = "combat" } } },
+      })))
+    end)
+
+    local function words(entries)
+      local out = {}
+      for _, e in ipairs(entries) do out[#out + 1] = e.word end
+      return out
+    end
+
+    it("puts every tier 1 word ahead of every tier 2 word, across categories", function()
+      assert.same({ "yak", "zebra", "aardvark", "alpha", "bravo" },
+                  words(merge.entries(state, { biasable = true })))
+    end)
+
+    it("orders within a tier by word, so two sessions bias identically", function()
+      local first = words(merge.entries(state, { biasable = true }))
+      assert.same(first, words(merge.entries(state, { biasable = true })))
+      assert.same({ "aardvark", "alpha", "bravo" }, { first[3], first[4], first[5] })
+    end)
+
+    it("still excludes tier 3, which is never biased toward", function()
+      for _, word in ipairs(words(merge.entries(state, { biasable = true }))) do
+        assert.not_equals("combat", word)
+      end
+    end)
+  end)
+
   describe("field encoding", function()
     it("accepts every boolean wire form, failing safe for protected", function()
       assert.is_true(merge.normBool(true))

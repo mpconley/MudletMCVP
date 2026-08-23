@@ -19,7 +19,7 @@ The motivating consumer is speech recognition: on-device speech-to-text engines 
 
 The design is shaped by a practical constraint of speech engines: biasing lists degrade recognition when they grow past a few hundred entries. The protocol therefore carries priorities and budgets, assigned by the server, so that scarce biasing capacity is spent on the vocabulary a character actually uses.
 
-That constraint is why the budgets exist: engine documentation is plain that oversized biasing lists degrade recognition rather than merely plateau. The first correctly instrumented measurement across a conforming server and client bore the budgets out from the constructive side — a budget-sized list, dynamic context first with the catalog filling the remainder, improved exact recognition substantially, and the words rescued most often were the game's short command verbs. What the budget is spent on matters as much as how it is filled. (An earlier measurement reported here as showing catalog-only biasing scoring worse than none was later traced to a client fault that applied no biasing in either condition; it is withdrawn — see [[#Versions|Versions]].)
+That constraint is why the budgets exist: engine documentation is plain that oversized biasing lists degrade recognition rather than merely plateau. Correctly instrumented measurement across a conforming server and client bears the budgets out from the constructive side — a budget-sized list, dynamic context first with the catalog filling the remainder, improves exact recognition, and the words rescued most often are the game's short command verbs. What the budget is spent on matters as much as how it is filled. (An earlier measurement reported here as showing catalog-only biasing scoring worse than none was later traced to a client fault that applied no biasing in either condition; it is withdrawn — see [[#Versions|Versions]].)
 
 == Overview of the GMCP (201) Sub-negotiation Protocol ==
 
@@ -72,7 +72,7 @@ Empty collections have the same difficulty as booleans, and for the same reason.
 
 All vocabulary messages flow server to client. There are exactly two.
 
-==== Client.Vocabulary.Catalog ====
+=== Client.Vocabulary.Catalog ===
 
 * Package: Client.Vocabulary.Catalog
 * Purpose: Deliver the complete vocabulary catalog for the connected character.
@@ -107,7 +107,7 @@ Usage:
 |- style="color: green;"
 | style="text-align:center;"| Yes
 | "version"
-| <opaque string>
+| <code>&lt;opaque string&gt;</code>
 | style="text-align:left;"|
 * Identifies this catalog state; stable for identical content across sessions and server restarts.
 * Implementations commonly use a content hash computed over a canonical rendering.
@@ -115,7 +115,7 @@ Usage:
 |- style="color: green;"
 | style="text-align:center;"| Yes
 | "categories"
-| <object>
+| <code>&lt;object&gt;</code>
 | style="text-align:left;"|
 * Maps category names to category objects.
 * Standard categories: <code>commands</code>, <code>socials</code>, <code>directions</code>, <code>channels</code>, <code>nicknames</code>, <code>helptopics</code>.
@@ -132,7 +132,7 @@ Each category object carries a <code>priority</code> (the default tier for every
 |- style="color: green;"
 | style="text-align:center;"| Yes
 | "word"
-| <string>
+| <code>&lt;string&gt;</code>
 | style="text-align:left;"|
 * The canonical spoken form: lowercase ASCII, deduplicated within the category.
 * Abbreviations belong in <code>aliases</code>, never as separate peer entries.
@@ -146,20 +146,20 @@ Each category object carries a <code>priority</code> (the default tier for every
 |-
 | style="text-align:center;"| No
 | "syntax"
-| <pattern>
+| <code>&lt;pattern&gt;</code>
 | style="text-align:left;"|
 * A one-line pattern for what may follow the word. See [[#Syntax Patterns|Syntax Patterns]].
 |-
 | style="text-align:center;"| No
 | "aliases"
-| <array of strings>
+| <code>&lt;array of strings&gt;</code>
 | style="text-align:left;"|
 * Alternative accepted forms (<code>n</code> for <code>north</code>).
 * An alias inherits its entry's priority, position and <code>protected</code> flag; it is never independently biasable or correctable.
 |-
 | style="text-align:center;"| No
 | "expansion"
-| <string>
+| <code>&lt;string&gt;</code>
 | style="text-align:left;"|
 * What a shortcut sends when used, so a client can display or speak its meaning. Typical on <code>nicknames</code>.
 |-
@@ -179,7 +179,7 @@ Each category object carries a <code>priority</code> (the default tier for every
 * May also arrive as <code>"true"</code>/<code>"false"</code> or <code>1</code>/<code>0</code> per [[#Field Encoding|Field Encoding]]; servers omit the field rather than sending false.
 |}
 
-==== Client.Vocabulary.Update ====
+=== Client.Vocabulary.Update ===
 
 * Package: Client.Vocabulary.Update
 * Purpose: Deliver an incremental change to a catalog already held by the client.
@@ -307,7 +307,7 @@ A full catalog for a typical character is on the order of a thousand entries and
 * Cache the merged catalog keyed by <code>version</code>; an arriving Catalog matching a cached version needs no re-parse.
 * Keep one defensive rule even though servers make it unreachable in normal operation: if a Catalog ever arrives bearing a version older than the current merged state, keep the merged state and schedule a single re-request.
 * Bind slot classes to whatever room, inventory and player data the connected game already publishes; those packages vary by game, so an adapter layer per GMCP dialect keeps the vocabulary consumer itself game-neutral. Sample dynamic context when input capture begins (a push-to-talk press, a completion request) rather than chasing every state update.
-* '''Spend the biasing budget on what is about to be said.''' Dynamic context and the catalog compete for one small allowance, and they are not equally valuable: the thing standing in the room is a word the player is about to speak, while much of the catalog is vocabulary the recognizer already handles. Fill the list from context first and let the catalog take what remains. Measured with both sources in one list, the words rescued most often were the game's short command verbs — catalog words — so the two sources are complements rather than competitors: context supplies the nouns that change with every room, the catalog the verbs said in every one.
+* '''Spend the biasing budget on what is about to be said.''' Dynamic context and the catalog compete for one small allowance, and they are not equally valuable: the thing standing in the room is a word the player is about to speak, while much of the catalog is vocabulary the recognizer already handles. Fill the list from context first and let the catalog take what remains. Measured with both sources in one list, the words rescued most often were the game's short command verbs — catalog words — so the two sources are complements rather than competitors: context supplies the nouns that change with every room, the catalog the verbs said in every one. Biasing also reaches errors that client-side correction cannot: a word heard as a non-word two edits away is outside any conservative correction budget, and only the recognizer itself can prevent it.
 * '''Reduce a game's display names to the words a player speaks.''' Live data names things for reading, not for saying: an object presented as "A bottle of beer" is spoken as "get beer" or "get bottle", so bind the content words and drop the articles. Deduplicate what remains — a single room may hold thirty copies of one object, and thirty copies of one word exhaust an allowance while adding nothing.
 * '''Leave the shortest words out of biasing.''' One- and two-letter forms are abbreviations, and steering a recognizer toward them risks it preferring the abbreviation to the word it abbreviates. Correction and completion may still use them.
 * Where a game's live data does not let a client tell a creature from an object, bias toward the union of both — biasing needs no classification — and withhold only the slot-specific correction that does, per the fail-safe principle.
@@ -318,7 +318,7 @@ A full catalog for a typical character is on the order of a thousand entries and
 
 * Version 1.0: Initial specification by Mike Conley (mike.conley[at]stickmud.com) on 15-AUG-2026.
 * Version 1.0.1: Clarifications drawn from the first server and client implementations, on 19-AUG-2026. Empty collections are documented alongside the other driver encoding quirks; the durability of the catalog is stated as a design principle, and the dynamic slot classes say plainly why this protocol describes no schema for the data that fills them; guidance is added on how a shared biasing budget should be spent. No change to the wire format — a version 1 client and a version 1 server interoperate exactly as before.
-* Version 1.0.2: Editorial and corrective, on 22-AUG-2026. '''Priorities and Budgets''' is rewritten after review feedback that its table assumed the reader already knew what speech-recognition biasing is: the term is now explained in plain language where it is first needed, the tier table says what a client does with each tier ''and'' what belongs there, and tier 3 is stated to be where most of a game's vocabulary belongs rather than a discard pile. The biasing measurements cited in 1.0.1 are withdrawn. They were taken through a client whose engine integration compiled the biasing words in but applied them with a weight of zero, so both conditions ran effectively unbiased and the reported differences were noise. The first valid measurement — StickMUD against the Mudlet consumer package, three passes per condition at matched input levels — found biasing a budget-sized list improved exact recognition markedly (21/21 against 17/21 in the deciding run), with the leading command verb the word most often rescued; the effect's direction is established, its size not yet pinned. Rationale and guidance text are corrected accordingly. The budgets, tiers and context-first guidance are unchanged, and there is no change to the wire format.
+* Version 1.0.2: Editorial and corrective, on 22-AUG-2026. '''Priorities and Budgets''' is rewritten after review feedback that its table assumed the reader already knew what speech-recognition biasing is: the term is now explained in plain language where it is first needed, the tier table says what a client does with each tier ''and'' what belongs there, and tier 3 is stated to be where most of a game's vocabulary belongs rather than a discard pile. The biasing measurements cited in 1.0.1 are withdrawn. They were taken through a client whose engine integration compiled the biasing words in but applied them with a weight of zero, so both conditions ran effectively unbiased and the reported differences were noise. Valid measurement — StickMUD against the Mudlet consumer package, 24 paired phrases per condition at matched input levels, the order of the two conditions drawn at random — finds biasing a budget-sized list improving exact recognition from 63% to 79%, with losses of the leading command verb falling from 5 to 2. The aggregate is not what carries this: 24 paired trials give 7 improvements against 3 regressions, which no significance test would call decisive on its own. The per-phrase pattern does. One catalog noun came back as a non-word on every unbiased attempt and on none of the biased ones — an error client-side correction cannot repair either, being two edits away on a six-letter word — and the unbiased run repeatedly lost the verb <code>get</code>, a tier 1 word that biasing boosts directly. So the effect's direction is established and its mechanism understood; its size is not pinned, and biasing is not free — two phrases in the same run got worse under it. Rationale and guidance text are corrected accordingly. The budgets, tiers and context-first guidance are unchanged, and there is no change to the wire format.
 
 == Advertise Support for MCVP ==
 

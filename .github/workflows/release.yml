@@ -9,6 +9,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # lets the publish step below mint the OIDC token trusted publishing uses
+      id-token: write
 
     steps:
       - uses: actions/checkout@v3.3.0
@@ -35,6 +37,33 @@ jobs:
         with:
           muddlerVersion: LATEST
 
+
+      # Trusted publishing needs to know whether this push is a new version or
+      # just another commit on main. The release step below runs with
+      # allowUpdates, so it happily re-uploads to an existing tag - and without
+      # this the package repository would get a pull request on every push.
+      - name: Has this version been released before?
+        id: released
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ env.mfile_version }}
+        with:
+          script: |
+            try {
+              await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: process.env.VERSION,
+              })
+              core.setOutput('isNew', 'false')
+              core.notice(`${process.env.VERSION} is already released; not publishing again`)
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error
+              }
+              core.setOutput('isNew', 'true')
+            }
+
       - uses: ncipollo/release-action@v1
         # see https://github.com/marketplace/actions/create-release
         with:
@@ -42,3 +71,46 @@ jobs:
           allowUpdates: true
           bodyFile: "./README.md"
           tag: ${{ env.mfile_version }}
+
+      # Publishes to https://packages.mudlet.org with no stored credential: the
+      # job mints a short-lived OIDC token describing this exact run, and the
+      # site checks it against its trusted-publishers.json entry for this
+      # repository and this workflow file. See TRUSTED-PUBLISHING.md there.
+      #
+      # This lives in the same workflow that makes the release rather than in
+      # its own file on `release: published`, because a release created with the
+      # default GITHUB_TOKEN deliberately does not trigger further workflows -
+      # a separate publish workflow would simply never run.
+      - name: Publish to the Mudlet package repository
+        if: steps.released.outputs.isNew == 'true'
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ env.mfile_version }}
+        with:
+          script: |
+            const { data: release } = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag: process.env.VERSION,
+            })
+
+            const asset = release.assets.find(a => a.name.endsWith('.mpackage'))
+            if (!asset) {
+              throw new Error(`no .mpackage asset on release ${process.env.VERSION}`)
+            }
+
+            const token = await core.getIDToken('https://packages.mudlet.org')
+            const response = await fetch('https://packages.mudlet.org/api/publish', {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${token}`,
+                'content-type': 'application/json',
+              },
+              body: JSON.stringify({ artifactUrl: asset.browser_download_url }),
+            })
+
+            const result = await response.json()
+            if (!response.ok) {
+              throw new Error(result.error || `HTTP ${response.status}`)
+            }
+            core.notice(`Opened ${result.pullRequest}`)

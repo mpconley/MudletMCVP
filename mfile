@@ -2,7 +2,7 @@
        "package": "MCVP",
        "title": "MudletMCVP",
        "description": "Mudlet consumer package for the MUD Client Vocabulary Protocol (Client.Vocabulary over GMCP).",
-       "version": "2.0.1",
+       "version": "2.0.2",
        "author": "Tamarindo",
        "icon": "icon.png",
        "outputFile": true

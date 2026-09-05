@@ -14,10 +14,11 @@ on:
         default: false
 
 jobs:
-  # Releasing is gated on the specs rather than merely running beside them:
-  # both workflows trigger on a push to main, so without this a push with
-  # failing specs still builds, tags, releases and opens a pull request
-  # against the package repository.
+  # A push to main runs this workflow, which calls test.yml and gates the build
+  # on it through needs: test below. That gating is the point: while the specs
+  # merely ran alongside the release, a push with failing specs still built,
+  # tagged, released and opened a pull request against the package repository,
+  # because a red X on a sibling workflow blocks nothing.
   test:
     uses: ./.github/workflows/test.yml
 

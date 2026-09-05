@@ -93,8 +93,16 @@ jobs:
               core.setOutput('isNew', 'true')
             }
 
+      # Gated the same way the publish step is, because a released version must
+      # keep identifying one artifact. allowUpdates means an ungated run
+      # re-uploads over an existing tag, so any later push to main - a comment,
+      # a workflow tweak, anything muddler does not package - replaced the
+      # asset on a release whose original had already gone to
+      # packages.mudlet.org. The build above still runs on every push, which is
+      # what checks the package still builds; only the release is withheld.
       - uses: ncipollo/release-action@v1
         # see https://github.com/marketplace/actions/create-release
+        if: steps.released.outputs.isNew == 'true' || inputs.forcePublish
         with:
           artifacts: "build/${{env.mfile_package}}.mpackage,version.txt"
           artifactErrorsFailBuild: true

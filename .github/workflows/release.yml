@@ -13,6 +13,18 @@ on:
         type: boolean
         default: false
 
+# Releasing is a read-then-act sequence: one step asks whether this version has
+# been released, and two later steps act on the answer. Two runs racing through
+# that window would both decide the version is new, and both would open a pull
+# request against the Mudlet package repository. Serialize them.
+#
+# Never cancel in progress. A run cancelled between creating the release and
+# publishing it leaves exactly the stranded state forcePublish exists to dig
+# out of, and losing a publish is worse than waiting for one.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # A push to main runs this workflow, which calls test.yml and gates the build
   # on it through needs: test below. That gating is the point: while the specs

@@ -89,7 +89,12 @@ local function usableCache(categories)
     end
     for _, entry in pairs(cat.entries) do
       if type(entry) ~= "table" or type(entry.word) ~= "string" or entry.word == ""
-        or type(entry.priority) ~= "number" or type(entry.protected) ~= "boolean" then
+        or type(entry.priority) ~= "number" or type(entry.protected) ~= "boolean"
+        or type(entry.correctable) ~= "boolean"
+        or (entry.position ~= nil and type(entry.position) ~= "string")
+        or (entry.syntax ~= nil and type(entry.syntax) ~= "string")
+        or (entry.expansion ~= nil and type(entry.expansion) ~= "string")
+        or (entry.aliases ~= nil and type(entry.aliases) ~= "table") then
         return false
       end
     end

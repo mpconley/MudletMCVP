@@ -58,7 +58,7 @@ describe("mcvp catalog cache", function()
     catalog("v2", { commands = { priority = 1, entries = { { word = "kill" }, { word = "wave" } } } })
     mcvp._onCatalog()
     m.setCache({ version = "v0", categories = {
-      old = { priority = 3, entries = { ["stale|"] = {
+      old = { priority = 3, entries = { ["5:stale|"] = {
         word = "stale", priority = 3, protected = false, correctable = true,
       }}},
     }})
@@ -74,7 +74,7 @@ describe("mcvp catalog cache", function()
     -- through mcvp.entries(), where a wrong field type raises inside the
     -- consumer's own call stack rather than anywhere near the cache.
     local m = fake.install({ files = { [CACHE] = { version = "v1", categories = {
-      commands = { priority = 1, entries = { ["peer|"] = { word = "peer" } } },  -- no priority
+      commands = { priority = 1, entries = { ["4:peer|"] = { word = "peer" } } },  -- no priority
     }}}})
     fake.loadPackage()
     mcvp.setCacheKey("hero")
@@ -159,10 +159,10 @@ describe("mcvp catalog cache", function()
     -- A cached category the server no longer sends must not survive a Catalog
     -- bearing the same version, or nothing can ever retract it.
     fake.install({ files = { [CACHE] = { version = "v1", categories = {
-      commands = { priority = 1, entries = { ["kill|"] = {
+      commands = { priority = 1, entries = { ["4:kill|"] = {
         word = "kill", priority = 1, protected = false, correctable = true,
       }}},
-      ghost = { priority = 1, entries = { ["oldword|"] = {
+      ghost = { priority = 1, entries = { ["7:oldword|"] = {
         word = "oldword", priority = 1, protected = false, correctable = true,
       }}},
     }}}})

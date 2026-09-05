@@ -170,9 +170,11 @@ end
 -- what was in reach, which repopulates on the adapter's next update.
 --
 -- The adapter shape is checked before anything is torn down, and the module
--- only reports itself bound() once the handlers exist - a half-registered
--- adapter would make bound() answer "yes" while nothing was wired, which is
--- the one wrong answer it exists to prevent.
+-- only reports itself bound() once registration has run to completion - a
+-- half-registered adapter would make bound() answer "yes" while its handlers
+-- were never wired, which is the one wrong answer it exists to prevent. An
+-- adapter naming no events registers no handlers and is still bound; it has
+-- simply chosen to be driven by something other than a GMCP message.
 function context.register(adapter)
   assert(type(adapter) == "table", "mcvp.context.register needs an adapter table")
   assert(type(adapter.read) == "function", "an adapter needs a read(event, payload) function")

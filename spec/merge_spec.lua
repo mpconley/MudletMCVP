@@ -298,6 +298,34 @@ describe("mcvp.merge", function()
       assert.equals(0, #merge.entries(state, { category = "mysterycat" }))
     end)
 
+    it("keeps an unrecognized position as its own identity", function()
+      -- Identity is (word, position). Folding an unrecognized value onto the
+      -- same word with no position would let wire order decide which of the
+      -- two survives, and half the orderings lose the fail-closed one.
+      local fresh = merge.new()
+      assert.is_true(merge.applyCatalog(fresh, catalog("v1", {
+        commands = { priority = 1, entries = {
+          { word = "warp" },
+          { word = "warp", position = "sideways" },
+        }},
+      })))
+      assert.equals(2, #merge.entries(fresh, { category = "commands" }))
+      -- The plain one is still correctable; the unrecognized one never is.
+      assert.equals(1, #merge.entries(fresh, { category = "commands", correctable = true }))
+    end)
+
+    it("keys entries so a separator inside a word or position cannot collide", function()
+      local fresh = merge.new()
+      assert.is_true(merge.applyCatalog(fresh, catalog("v1", {
+        commands = { priority = 1, entries = {
+          { word = "a|b" },
+          { word = "a", position = "b|" },
+          { word = "a" },
+        }},
+      })))
+      assert.equals(3, #merge.entries(fresh, { category = "commands" }))
+    end)
+
     it("excludes unknown position values from correction but not from listing", function()
       assert.is_true(merge.applyUpdate(state, { version = "v2", from = "v1", categories = {
         commands = { add = { { word = "warp", position = "sideways" } } },
@@ -334,6 +362,16 @@ describe("mcvp.merge", function()
         }},
       })))
       assert.same({ "kill" }, words(merge.entries(fresh)))
+    end)
+
+    it("drops an alias longer than any real command", function()
+      local fresh = merge.new()
+      merge.applyCatalog(fresh, catalog("v1", {
+        commands = { priority = 1, entries = { { word = "kill", aliases = {
+          string.rep("z", merge.maxWordLength + 1), "k",
+        }}}},
+      }))
+      assert.same({ "k" }, byWord(merge.entries(fresh), "kill").aliases)
     end)
 
     it("caps the aliases carried on one entry", function()

@@ -68,14 +68,16 @@ merge.minBiasLength = 3
 
 local VALID_POSITION = { leading = true, argument = true }
 
--- Entry identity within a category is (word, position). Keys are built as
--- word .. "|" .. position, and the three position suffixes ("", "leading",
--- "argument") cannot alias one another, so the key stays unique even if a
--- hostile server puts a "|" inside a word. A printable separator rather than
--- NUL is what lets merged state survive table.save/table.load - Lua 5.1's %q
--- does not round-trip embedded NUL bytes.
+-- Entry identity within a category is (word, position), and the standard
+-- keeps that true of a position value this client does not recognize - so
+-- position is an arbitrary string from the wire and neither half can be
+-- assumed free of the separator. Length-prefixing the word makes the key
+-- injective regardless: the prefix says where the word ends, so no pair of
+-- (word, position) can produce the same string. A printable separator rather
+-- than NUL is what lets merged state survive table.save/table.load - Lua
+-- 5.1's %q does not round-trip embedded NUL bytes.
 local function entryKey(word, position)
-  return word .. "|" .. (position or "")
+  return #word .. ":" .. word .. "|" .. (position or "")
 end
 
 -- Normalize one wire entry into stored form. Unknown fields are dropped;
@@ -91,7 +93,12 @@ local function normEntry(raw, categoryDefaultPriority)
     if VALID_POSITION[raw.position] then
       position = raw.position
     else
+      -- Fail closed for correction, but keep the value: identity is
+      -- (word, position), so an unrecognized position must not displace the
+      -- same word carrying none and leave wire order to pick the survivor.
+      -- A non-string position cannot be an identity, so it folds.
       correctable = false
+      position = type(raw.position) == "string" and raw.position or nil
     end
   end
   local aliases = nil
@@ -99,7 +106,8 @@ local function normEntry(raw, categoryDefaultPriority)
   if rawAliases then
     aliases = {}
     for _, a in ipairs(rawAliases) do
-      if type(a) == "string" and a ~= "" and #aliases < merge.maxAliases then
+      if type(a) == "string" and a ~= "" and #a <= merge.maxWordLength
+        and #aliases < merge.maxAliases then
         aliases[#aliases + 1] = a
       end
     end

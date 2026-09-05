@@ -3,9 +3,26 @@ name: Build project using muddler and upload artifact
 on:
   push:
     branches: [ main ]
+  # A publish that failed transiently leaves the release (and so the tag) in
+  # place, which makes every later run decide the version is not new. This is
+  # the way back in without deleting the release by hand.
+  workflow_dispatch:
+    inputs:
+      forcePublish:
+        description: "Publish to packages.mudlet.org even though the tag already exists"
+        type: boolean
+        default: false
 
 jobs:
+  # Releasing is gated on the specs rather than merely running beside them:
+  # both workflows trigger on a push to main, so without this a push with
+  # failing specs still builds, tags, releases and opens a pull request
+  # against the package repository.
+  test:
+    uses: ./.github/workflows/test.yml
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -37,6 +54,12 @@ jobs:
         with:
           muddlerVersion: LATEST
 
+      # muddler can exit 0 without leaving the package where the release step
+      # looks for it (a renamed output, a changed layout). Failing here puts
+      # the error on the build, rather than producing a release with nothing
+      # attached to it.
+      - name: Check the package was built
+        run: test -f "build/${{ env.mfile_package }}.mpackage"
 
       # Trusted publishing needs to know whether this push is a new version or
       # just another commit on main. The release step below runs with
@@ -56,7 +79,12 @@ jobs:
                 tag: process.env.VERSION,
               })
               core.setOutput('isNew', 'false')
-              core.notice(`${process.env.VERSION} is already released; not publishing again`)
+              // A warning, not a notice: this is also what a stranded publish
+              // looks like on a re-run, and it must not read as success.
+              core.warning(
+                `${process.env.VERSION} is already released, so it will not be published again. ` +
+                `If a previous run created the release but failed to publish, re-run this workflow ` +
+                `manually with forcePublish enabled.`)
             } catch (error) {
               if (error.status !== 404) {
                 throw error
@@ -68,6 +96,7 @@ jobs:
         # see https://github.com/marketplace/actions/create-release
         with:
           artifacts: "build/${{env.mfile_package}}.mpackage,version.txt"
+          artifactErrorsFailBuild: true
           allowUpdates: true
           bodyFile: "./README.md"
           tag: ${{ env.mfile_version }}
@@ -82,7 +111,7 @@ jobs:
       # default GITHUB_TOKEN deliberately does not trigger further workflows -
       # a separate publish workflow would simply never run.
       - name: Publish to the Mudlet package repository
-        if: steps.released.outputs.isNew == 'true'
+        if: steps.released.outputs.isNew == 'true' || inputs.forcePublish
         uses: actions/github-script@v7
         env:
           VERSION: ${{ env.mfile_version }}
@@ -109,8 +138,13 @@ jobs:
               body: JSON.stringify({ artifactUrl: asset.browser_download_url }),
             })
 
-            const result = await response.json()
+            // Read the status before the body: a gateway error answers with an
+            // HTML page, and parsing that first reports a JSON syntax error in
+            // place of the HTTP failure that actually happened.
             if (!response.ok) {
-              throw new Error(result.error || `HTTP ${response.status}`)
+              const detail = await response.text()
+              throw new Error(`HTTP ${response.status}: ${detail.slice(0, 500)}`)
             }
+
+            const result = await response.json()
             core.notice(`Opened ${result.pullRequest}`)

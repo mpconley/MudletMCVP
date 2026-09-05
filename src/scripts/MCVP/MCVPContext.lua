@@ -14,7 +14,8 @@
 -- and how to read one, is per-game and arrives as an adapter - the protocol
 -- describes no schema for it, so neither does this.
 --
--- Everything above the wiring section is pure and tested without Mudlet.
+-- Everything above the wiring section is free of Mudlet globals and tested
+-- under busted alone; the wiring below is covered there too, against fakes.
 -- @module mcvp.context
 
 mcvp = mcvp or {}
@@ -28,8 +29,11 @@ context.notSpoken = {
   ["and"] = true, with = true,
 }
 
--- Short words make poor biasing and correction targets - they collide with
--- everything - and the same floor is applied to catalog words
+-- Short words make poor biasing targets - a recognizer steered toward an
+-- abbreviation may prefer it to the word it abbreviates - so they are dropped
+-- here, and mcvp.merge.minBiasLength applies the same floor to catalog words.
+-- The standard allows correction and completion to keep short forms; a
+-- consumer needing them reads names() rather than words().
 context.minNounLength = 3
 
 --- The words a player would actually say to refer to something, from the name
@@ -62,6 +66,13 @@ local function usable(entry)
   return type(entry) == "table" and entry.id ~= nil and type(entry.name) == "string" and entry.name ~= ""
 end
 
+-- Ids are keys, and a game that lists an object under a JSON number but
+-- removes it by a quoted string would otherwise strand it in reach forever.
+-- Both GMCP dialects are ordinary, so identity is the id as text.
+local function idKey(id)
+  return tostring(id)
+end
+
 --- Fold one adapter update into the state. The three shapes are all a game
 -- needs to describe what is in reach: everything here now, one thing arrived,
 -- one thing left. An update naming no place, or carrying none of the three,
@@ -74,15 +85,15 @@ function context.apply(state, update)
     for id in pairs(place) do place[id] = nil end
     for _, entry in pairs(update.replace) do
       if usable(entry) then
-        place[entry.id] = { name = entry.name, slot = entry.slot }
+        place[idKey(entry.id)] = { name = entry.name, slot = entry.slot }
       end
     end
   elseif update.add ~= nil then
     if usable(update.add) then
-      place[update.add.id] = { name = update.add.name, slot = update.add.slot }
+      place[idKey(update.add.id)] = { name = update.add.name, slot = update.add.slot }
     end
   elseif update.remove ~= nil then
-    place[update.remove] = nil
+    place[idKey(update.remove)] = nil
   end
 
   return state
@@ -106,6 +117,12 @@ function context.words(state, opts)
       end
     end
   end
+  -- The standard fills the biasing budget from context before the catalog, so
+  -- this list is spent first and is the more likely one to be cut short.
+  -- pairs() above is hash order, unordered and different between sessions, so
+  -- a truncated list would bias differently on every sample. Sorting makes the
+  -- cut deterministic, for the same reason mcvp.merge.entries sorts.
+  table.sort(out)
   return out
 end
 
@@ -122,6 +139,7 @@ function context.names(state, opts)
       end
     end
   end
+  table.sort(out)
   return out
 end
 
@@ -148,15 +166,24 @@ end
 -- adapter.events lists the GMCP events that carry the data, and
 -- adapter.read(event, payload) turns one of them into an update for apply()
 -- or nil to ignore it. Registering replaces any previous adapter, so a
--- package reloading its scripts does not end up wired twice.
+-- package reloading its scripts does not end up wired twice; it also clears
+-- what was in reach, which repopulates on the adapter's next update.
+--
+-- The adapter shape is checked before anything is torn down, and the module
+-- only reports itself bound() once registration has run to completion - a
+-- half-registered adapter would make bound() answer "yes" while its handlers
+-- were never wired, which is the one wrong answer it exists to prevent. An
+-- adapter naming no events registers no handlers and is still bound; it has
+-- simply chosen to be driven by something other than a GMCP message.
 function context.register(adapter)
   assert(type(adapter) == "table", "mcvp.context.register needs an adapter table")
   assert(type(adapter.read) == "function", "an adapter needs a read(event, payload) function")
+  assert(adapter.events == nil or type(adapter.events) == "table",
+    "an adapter's events must be a list of GMCP event names")
+  assert(type(registerAnonymousEventHandler) == "function",
+    "mcvp.context.register needs Mudlet's registerAnonymousEventHandler")
 
   context.unregister()
-  context._adapter = adapter
-
-  if type(registerAnonymousEventHandler) ~= "function" then return end
 
   for _, event in ipairs(adapter.events or {}) do
     context._handlers[event] = registerAnonymousEventHandler(event, function()
@@ -166,6 +193,8 @@ function context.register(adapter)
       end
     end)
   end
+
+  context._adapter = adapter
 end
 
 --- Stop binding in-reach words.

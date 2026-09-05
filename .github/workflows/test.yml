@@ -1,9 +1,12 @@
 name: Run busted specs
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
+  # The release workflow calls this one and will not build unless it passes,
+  # so pushes to main run the specs there rather than here. Running on push as
+  # well would only duplicate the job: a red X on a sibling workflow blocks
+  # nothing, which is why gating replaced it.
+  workflow_call:
 
 jobs:
   test:

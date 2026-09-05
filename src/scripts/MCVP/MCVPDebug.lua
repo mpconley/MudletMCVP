@@ -1,5 +1,7 @@
---- Debug helpers for integration testing. Safe to ship: everything here is
--- inert until called from the command line.
+--- Debug helpers for integration testing. Safe to ship: nothing here runs
+-- until a function is called by hand - the package installs scripts only, no
+-- aliases, so these are plain globals typed at the Lua prompt. Arming persists
+-- until the next Update arrives; neither a reload nor mcvp.stop() clears it.
 -- @module mcvp.debug
 
 mcvp = mcvp or {}

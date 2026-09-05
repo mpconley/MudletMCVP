@@ -1,9 +1,11 @@
 --- MCVP lifecycle: negotiation, GMCP handlers, re-request discipline, cache.
 -- Uses only Mudlet APIs confirmed present in both desktop Mudlet and
--- mudlet-web (sendGMCP, registerAnonymousEventHandler, tempTimer,
--- getMudletHomeDir, table.save/table.load, raiseEvent), so the package runs
--- unchanged on either client. All protocol logic lives in mcvp/merge.lua;
--- this file only wires it to the wire.
+-- mudlet-web (sendGMCP, registerAnonymousEventHandler,
+-- killAnonymousEventHandler, tempTimer, getMudletHomeDir, table.save/
+-- table.load, raiseEvent), so the package runs unchanged on either client.
+-- Catalog and Update merging lives in MCVPMerge.lua (mcvp.merge); this file
+-- owns the wire-facing rules - negotiation, re-request discipline, the
+-- version-regression rule, and the cache.
 -- @module mcvp
 
 mcvp = mcvp or {}
@@ -12,27 +14,51 @@ assert(mcvp.merge, "MCVPMerge must load before MCVPLoader - check scripts.json o
 mcvp._state = mcvp._state or mcvp.merge.new()
 mcvp._handlers = mcvp._handlers or {}
 -- One-shot re-request discipline: while one is pending, no path may issue
--- another. The server throttles rebuilds and answers identical-version
--- Catalogs from a held copy, so retry loops gain nothing and are forbidden.
+-- another. The server may throttle rebuilds and answer identical-version
+-- Catalogs from a held copy, so retry loops gain nothing and the standard
+-- forbids them.
 mcvp._rerequestPending = false
--- Versions held earlier this session, for the defensive regression rule.
--- Opaque versions cannot be ordered, so "older" is only detectable as
--- "seen before and not current".
-mcvp._seenVersions = mcvp._seenVersions or {}
+-- Whether a Catalog has arrived over the wire in this session, as opposed to
+-- state we restored from the cache. See _onCatalog.
+mcvp._catalogThisSession = mcvp._catalogThisSession or false
 
-local CACHE_FILE = "mcvp-cache.lua"
+-- The cache is keyed by character, never by profile: a catalog describes one
+-- character and carries that character's own shortcuts, so two characters on
+-- one profile must not share a file. This protocol carries no character
+-- identifier - a client obtains one out of band, the way it binds the dynamic
+-- slot classes - so a game names the character through mcvp.setCacheKey, and
+-- until it does, nothing is written to disk at all.
+mcvp._cacheKey = mcvp._cacheKey or nil
 
 local function cachePath()
-  return getMudletHomeDir() .. "/" .. CACHE_FILE
+  if not mcvp._cacheKey then return nil end
+  return getMudletHomeDir() .. "/mcvp-cache-" .. mcvp._cacheKey .. ".lua"
+end
+
+local function notify(message)
+  if type(echo) == "function" then echo("\n[mcvp] " .. message .. "\n") end
 end
 
 --- Send the bare-package re-request, at most one in flight.
--- @param delay optional seconds to wait first (the version-regression rule
---        schedules past the server's rebuild throttle window)
+-- A re-request that a Catalog has already satisfied while it was scheduled is
+-- dropped when its timer fires, so the delayed and immediate paths can never
+-- produce two requests for one fault.
+-- @param delay optional seconds to wait first, for a caller that wants to
+--        clear the server's rebuild throttle window before asking
 function mcvp.rerequest(delay)
   if mcvp._rerequestPending then return end
   mcvp._rerequestPending = true
-  local fire = function() sendGMCP("Client.Vocabulary") end
+  local fire = function()
+    -- A Catalog arriving inside the delay clears the flag; so does stop().
+    -- Either way this timer has nothing left to recover.
+    if not mcvp._rerequestPending then return end
+    local ok, err = pcall(sendGMCP, "Client.Vocabulary")
+    if not ok then
+      -- Nothing is in flight, so a later fault must be free to try again.
+      mcvp._rerequestPending = false
+      notify("could not request the vocabulary catalog: " .. tostring(err))
+    end
+  end
   if delay and delay > 0 then
     tempTimer(delay, fire)
   else
@@ -41,18 +67,61 @@ function mcvp.rerequest(delay)
 end
 
 local function persist()
-  -- Best effort: a cache miss only costs a re-parse on the next session
-  pcall(table.save, cachePath(), { version = mcvp._state.version, categories = mcvp._state.categories })
+  -- Best effort, and deliberately not an optimisation: an arriving Catalog is
+  -- applied in full whether or not the cache hit, so this only pre-populates
+  -- state before the first frame of the next session arrives.
+  local path = cachePath()
+  if not path then return end
+  pcall(table.save, path, { version = mcvp._state.version, categories = mcvp._state.categories })
+end
+
+-- The cache is the only path into merged state that does not pass through the
+-- merge engine's normalization, and it is the least trustworthy one: the file
+-- may have been hand-edited, truncated by a crash mid-write, or written by a
+-- different version of this package. Anything that does not have the shape
+-- normEntry produces is rejected whole - a rejected cache costs one re-parse,
+-- while a trusted bad one crashes inside a consumer's call to mcvp.entries().
+local function usableCache(categories)
+  for name, cat in pairs(categories) do
+    if type(name) ~= "string" or type(cat) ~= "table"
+      or type(cat.priority) ~= "number" or type(cat.entries) ~= "table" then
+      return false
+    end
+    for _, entry in pairs(cat.entries) do
+      if type(entry) ~= "table" or type(entry.word) ~= "string" or entry.word == ""
+        or type(entry.priority) ~= "number" or type(entry.protected) ~= "boolean"
+        or type(entry.correctable) ~= "boolean"
+        or (entry.position ~= nil and type(entry.position) ~= "string")
+        or (entry.syntax ~= nil and type(entry.syntax) ~= "string")
+        or (entry.expansion ~= nil and type(entry.expansion) ~= "string")
+        or (entry.aliases ~= nil and type(entry.aliases) ~= "table") then
+        return false
+      end
+    end
+  end
+  return true
 end
 
 local function restore()
+  -- Re-sourcing the package (a script edit, a package update) re-runs this
+  -- file while mcvp._state survives. Merged state we already hold is never
+  -- older than the cache, so it wins.
+  if mcvp._state.version ~= nil then return end
+
+  local path = cachePath()
+  if not path then return end
+
   local cached = {}
-  local ok = pcall(table.load, cachePath(), cached)
-  if ok and type(cached.version) == "string" and type(cached.categories) == "table" then
-    mcvp._state.version = cached.version
-    mcvp._state.categories = cached.categories
-    mcvp._seenVersions[cached.version] = true
+  local ok = pcall(table.load, path, cached)
+  if not ok or type(cached.version) ~= "string" or type(cached.categories) ~= "table" then
+    return
   end
+  if not usableCache(cached.categories) then
+    notify("vocabulary cache rejected as malformed; re-fetching from the server")
+    return
+  end
+  mcvp._state.version = cached.version
+  mcvp._state.categories = cached.categories
 end
 
 local function announce()
@@ -66,32 +135,36 @@ function mcvp._onCatalog()
   local payload = gmcp and gmcp.Client and gmcp.Client.Vocabulary and gmcp.Client.Vocabulary.Catalog
   if type(payload) ~= "table" then return end
 
-  -- Any arriving Catalog satisfies a pending re-request
+  -- A full Catalog is authoritative by construction, so it is applied even
+  -- when it bears a version this client held earlier in the session. Opaque
+  -- versions cannot be ordered, and the version is stable for identical
+  -- content, so a catalog whose content has returned to an earlier state
+  -- reproduces its earlier version legitimately - a player creating and then
+  -- deleting a shortcut is enough. Discarding on that basis would reject the
+  -- server's current catalog, and the re-request would be answered with the
+  -- same one, which is the retry loop the standard forbids.
+
+  -- A restored cache is not a frame of the Catalog now arriving. The first
+  -- Catalog of a session is complete and authoritative, so it replaces the
+  -- cache outright; letting it merge additively on a version match would leave
+  -- a category the server has since dropped alive in the cache forever, with
+  -- nothing able to retract it. Frames after the first share the version
+  -- because they are pagination, and those do merge.
+  if not mcvp._catalogThisSession then
+    mcvp._catalogThisSession = true
+    mcvp._state.version = nil
+  end
+
+  -- One path for every Catalog. A frame sharing the current version is a
+  -- pagination frame or the throttle's held copy answering a re-request; the
+  -- merge engine merges it additively. Any other version replaces all state.
+  -- A payload the engine rejects satisfies nothing: it neither clears a
+  -- pending re-request nor tells consumers anything changed.
+  if not mcvp.merge.applyCatalog(mcvp._state, payload) then return end
+
   mcvp._rerequestPending = false
-
-  if payload.version == mcvp._state.version then
-    -- Identical version: either the throttle's held copy answering a
-    -- re-request (success, nothing to do) or a pagination frame (merged
-    -- additively by the engine). Both are handled by applying.
-    mcvp.merge.applyCatalog(mcvp._state, payload)
-    announce()
-    return
-  end
-
-  -- Defensive regression rule: a version seen earlier this session but no
-  -- longer current means a served copy older than state we have already
-  -- merged past. Keep merged state; one re-request after the server's
-  -- throttle window. Expected unreachable against conforming servers.
-  if payload.version and mcvp._seenVersions[payload.version] then
-    mcvp.rerequest(12)
-    return
-  end
-
-  if mcvp.merge.applyCatalog(mcvp._state, payload) then
-    mcvp._seenVersions[mcvp._state.version] = true
-    persist()
-    announce()
-  end
+  persist()
+  announce()
 end
 
 function mcvp._onUpdate()
@@ -107,7 +180,6 @@ function mcvp._onUpdate()
 
   local ok, why = mcvp.merge.applyUpdate(mcvp._state, payload)
   if ok then
-    mcvp._seenVersions[mcvp._state.version] = true
     persist()
     announce()
     return
@@ -131,13 +203,34 @@ function mcvp._onGmcpEnabled(_, protocol)
 end
 
 --- Query merged vocabulary. Passes options through to the merge engine:
--- category, maxPriority, biasable, correctable, leading.
+-- category, maxPriority, biasable, correctable, leading. A biasable result is
+-- ordered by tier and then by word, because the caller spends a budget from
+-- the front of it; leading is only consulted together with correctable. The
+-- entries returned are the stored entries - treat them as read-only.
 function mcvp.entries(opts)
   return mcvp.merge.entries(mcvp._state, opts)
 end
 
 function mcvp.version()
   return mcvp._state.version
+end
+
+--- Name the character this catalog belongs to, which is what enables the
+-- on-disk cache. Until a game calls this nothing is persisted: the protocol
+-- carries no character identifier, and a cache that cannot name its character
+-- would serve one character's vocabulary, and their own shortcuts, to another
+-- on the same profile. Pass nil to turn caching off again.
+function mcvp.setCacheKey(key)
+  if key == nil then
+    mcvp._cacheKey = nil
+    return
+  end
+  assert(type(key) == "string" and key ~= "", "mcvp.setCacheKey needs a non-empty string")
+  -- Whatever a game calls its characters, this has to be one path segment.
+  mcvp._cacheKey = key:gsub("[^%w_%-]", "_")
+  -- A game that names the character after the package started still gets the
+  -- benefit of the cache, provided nothing has arrived over the wire yet.
+  restore()
 end
 
 function mcvp.start()
@@ -148,7 +241,9 @@ function mcvp.start()
   mcvp._handlers.protocol = registerAnonymousEventHandler("sysProtocolEnabled", mcvp._onGmcpEnabled)
   -- If GMCP is already up (package installed mid-session), advertise now;
   -- harmless before negotiation, where the server ignores unknown tokens.
-  pcall(sendGMCP, 'Core.Supports.Add ["Client.Vocabulary 1"]')
+  if type(sendGMCP) == "function" then
+    pcall(sendGMCP, 'Core.Supports.Add ["Client.Vocabulary 1"]')
+  end
 end
 
 function mcvp.stop()
@@ -156,6 +251,8 @@ function mcvp.stop()
     if id then killAnonymousEventHandler(id) end
     mcvp._handlers[key] = nil
   end
+  -- Also disarms a scheduled re-request: its timer checks this flag before
+  -- sending, so a torn-down package never talks to the server.
   mcvp._rerequestPending = false
 end
 
